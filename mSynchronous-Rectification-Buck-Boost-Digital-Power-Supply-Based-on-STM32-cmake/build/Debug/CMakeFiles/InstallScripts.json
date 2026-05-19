@@ -1,0 +1,8 @@
+{
+	"InstallScripts" : 
+	[
+		"D:/STM32 \u6570\u63a7\u53ef\u8c03\u76f4\u6d41\u7535\u6e90/mSynchronous-Rectification-Buck-Boost-Digital-Power-Supply-Based-on-STM32-cmake/build/Debug/cmake_install.cmake",
+		"D:/STM32 \u6570\u63a7\u53ef\u8c03\u76f4\u6d41\u7535\u6e90/mSynchronous-Rectification-Buck-Boost-Digital-Power-Supply-Based-on-STM32-cmake/build/Debug/cmake/stm32cubemx/cmake_install.cmake"
+	],
+	"Parallel" : false
+}
