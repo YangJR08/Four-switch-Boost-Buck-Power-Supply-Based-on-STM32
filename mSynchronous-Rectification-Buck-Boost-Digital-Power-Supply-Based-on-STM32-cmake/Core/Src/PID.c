@@ -15,6 +15,7 @@ volatile int32_t IErr0 = 0, IErr1 = 0;            // 电流误差
 volatile int32_t u0 = 0, u1 = 0;                  // 电压环输出量
 volatile int32_t i0 = 0, i1 = 0;                  // 电流环输出量
 volatile _CVCC_Mode CVCC_Mode = CV;               // 恒流恒压模式标志位
+static int32_t I_Integral = 0;                    // 电流环路积分量（文件级静态，便于统一清零）
 
 void PID_Init(void)
 {
@@ -25,6 +26,7 @@ void PID_Init(void)
     u1 = 0;
     i0 = 0;
     IErr0 = 0;
+    I_Integral = 0; // 彻底清除电流环的积分记忆，才是真正的安全初始化
 }
 
 // 环路的参数buck输出-恒压-PID型补偿器
@@ -47,8 +49,6 @@ void PID_Init(void)
  */
 CCMRAM void BuckBoostVILoopCtlPID(void)
 {
-    static int32_t I_Integral = 0; // 电流环路积分量
-
     CtrValue.Vout_ref = CtrValue.Vout_SETref; // 输出参考电压设置为设置电压
 
     int32_t VoutTemp = (ADC1_RESULT[2] * CAL_VOUT_K >> 12) + CAL_VOUT_B; // 获取矫正后的输出电压
@@ -58,42 +58,52 @@ CCMRAM void BuckBoostVILoopCtlPID(void)
     IErr0 = CtrValue.Iout_ref - IoutTemp;
     // 电流环路输出= 积分量 + KP*误差量 + KD*当前误差减上次误差
     i0 = I_Integral + IErr0 * ILOOP_KP + (IErr0 - IErr1) * ILOOP_KD;
-    // 积分量=积分量+KI*误差量
-    I_Integral = I_Integral + IErr0 * ILOOP_KI;
+    // 先试探积分累加，再根据Vout_ref边界决定是否真正落地
+    int32_t Next_Integral = I_Integral + IErr0 * ILOOP_KI;
 
-    // 积分量限制，积分量最大值限制
-    if (I_Integral > ADC_MAX_VALUE)
-        I_Integral = ADC_MAX_VALUE;
-
-    if (DF.SMFlag == Rise && (VoutTemp < (CtrValue.Vout_ref / 2))) // 判断是否在软启动状态
+    if (CtrValue.Vout_ref <= 0 && IErr0 < 0)
     {
-
-        CtrValue.Vout_ref = CtrValue.Vout_ref + i0;  // 输出参考电压加上电流环计算结果
-        CVCC_Mode = CC;                              // 恒流模式
-        if (CtrValue.Vout_ref > CtrValue.Vout_SSref) // 输出参考电压超过软启动设置电压时限制在软启动设置电压
-        {
-            CtrValue.Vout_ref = CtrValue.Vout_SSref; // 限制输出参考电压
-            CVCC_Mode = CV;                          // 恒压模式
-        }
-        if (CtrValue.Vout_ref < 0) // 输出参考电压小于0时限制在0
-        {
-            CtrValue.Vout_ref = 0;
-        }
+        // Vout_ref已触底且误差仍要求继续下压，冻结积分
+    }
+    else if (CtrValue.Vout_ref >= CtrValue.Vout_SETref && IErr0 > 0)
+    {
+        // Vout_ref已触顶且误差仍要求继续上冲，冻结积分
     }
     else
     {
-        CtrValue.Vout_ref = CtrValue.Vout_ref + i0;   // 输出参考电压加上电流环计算结果
-        CVCC_Mode = CC;                               // 恒流模式
-        if (CtrValue.Vout_ref > CtrValue.Vout_SETref) // 输出参考电压超过设置电压时限制在设置电压
-        {
-            CtrValue.Vout_ref = CtrValue.Vout_SETref; // 限制输出参考电压
-            CVCC_Mode = CV;                           // 恒压模式
-        }
-        if (CtrValue.Vout_ref < 0) // 输出参考电压小于0时限制在0
-        {
-            CtrValue.Vout_ref = 0;
-        }
+        I_Integral = Next_Integral;
     }
+
+    // 积分量限制，积分量最大值限制
+    if (I_Integral > I_INTEGRAL_MAX)
+        I_Integral = I_INTEGRAL_MAX;
+    else if (I_Integral < I_INTEGRAL_MIN)
+        I_Integral = I_INTEGRAL_MIN;
+
+    // 4. 【优化重点】软启动与模式控制逻辑整合
+    // 动态决定当前的电压环参考上限 (V_Max_Limit)
+    int32_t V_Max_Limit = CtrValue.Vout_SETref;
+    
+    // 使用右移 1 位代替除以 2，避免除法指令
+    if (DF.SMFlag == Rise && (VoutTemp < (CtrValue.Vout_ref >> 1))) 
+    {
+        V_Max_Limit = CtrValue.Vout_SSref; 
+    }
+
+    // 统一的电压参考值累加与限幅逻辑（消除原代码 if-else 块中 80% 的重复代码）
+    CtrValue.Vout_ref += i0;
+    CVCC_Mode = CC; // 默认由于电流环介入，处于恒流/限制状态
+
+    if (CtrValue.Vout_ref > V_Max_Limit) 
+    {
+        CtrValue.Vout_ref = V_Max_Limit;
+        CVCC_Mode = CV; // 触顶限幅，意味着电压外环掌握控制权，进入恒压
+    }
+    else if (CtrValue.Vout_ref < 0) 
+    {
+        CtrValue.Vout_ref = 0;
+    }
+
 
     VErr0 = CtrValue.Vout_ref - VoutTemp; // 计算电压误差量，当参考电压大于输出电压，占空比增加，输出量增加
 
@@ -132,7 +142,7 @@ CCMRAM void BuckBoostVILoopCtlPID(void)
         u1 = u0;
 
         // 环路输出赋值
-        CtrValue.BoostDuty = MIN_BOOST_DUTY1; // BOOST上管固定占空比94%，下管6%
+        CtrValue.BoostDuty = MIN_BOOST_DUTY1; // BOOST上管固定占空比94%，下管6%，给mos驱动自举充电
         CtrValue.BuckDuty = (u0 >> 8) * 3;    // 电压环占空比输出
 
         // 环路输出最大最小占空比限制
@@ -185,9 +195,27 @@ CCMRAM void BuckBoostVILoopCtlPID(void)
     }
     }
 
-    // PWMENFlag是PWM开启标志位，当该位为0时,buck的占空比为0，无输出;
+    // PWMENFlag是PWM开启标志位，当该位为0时，执行“清零+安全寄存器写入”
     if (DF.PWMENFlag == 0)
-        CtrValue.BuckDuty = MIN_BUKC_DUTY;
+    {
+        // 1) 数据拦截
+        CtrValue.BuckDuty = 0;
+        CtrValue.BoostDuty = 0;
+
+        // 2) 算法拦截，避免重启瞬间带历史量冲击
+        u1 = 0;
+        u0 = 0;
+        I_Integral = 0;
+        VErr1 = 0;
+        VErr2 = 0;
+        IErr1 = 0;
+
+        // 3) 安全寄存器写入（不在这里反复开关硬件输出）
+        __HAL_HRTIM_SETCOMPARE(&hhrtim1, HRTIM_TIMERINDEX_TIMER_D, HRTIM_COMPAREUNIT_1, PERIOD);
+        __HAL_HRTIM_SETCOMPARE(&hhrtim1, HRTIM_TIMERINDEX_TIMER_D, HRTIM_COMPAREUNIT_3, PERIOD >> 1);
+        __HAL_HRTIM_SETCOMPARE(&hhrtim1, HRTIM_TIMERINDEX_TIMER_F, HRTIM_COMPAREUNIT_1, 0);
+        return;
+    }
 
     // 更新对应寄存器
     // buck占空比

@@ -10,6 +10,13 @@
 #include <string.h>
 #include "param_store.h"
 
+/**
+ * @brief 硬件配置宏定义
+ * 用于条件编译，支持不同硬件配置
+ */
+#define HAS_NTC_SENSOR 0       /**< 是否有NTC温度传感器（0：无，1：有）*/
+#define HAS_CPU_TEMP_SENSOR 1  /**< 是否有CPU内部温度传感器（0：无，1：有）*/
+
 // 数字后面加F表示使用单精度浮点数类型，C语言默认使用双精度浮点数类型，硬件浮点运算只支持单精度浮点数
 
 volatile uint16_t ADC1_RESULT[4] = {0, 0, 0, 0};                   // ADC采样外设到内存的DMA数据保存寄存器
@@ -81,8 +88,16 @@ void ADC_calculate(void)
     IIN = SADC.IinAvg * REF_3V3 / ADC_MAX_VALUE / 62.0F / 0.005F;   // 计算ADC1通道1输入电流采样结果
     VOUT = SADC.VoutAvg * REF_3V3 / ADC_MAX_VALUE / (4.7F / 75.0F); // 计算ADC1通道2输出电压采样结果
     IOUT = SADC.IoutAvg * REF_3V3 / ADC_MAX_VALUE / 62.0F / 0.005F; // 计算ADC1通道3输出电流采样结果
+#if HAS_NTC_SENSOR
     MainBoard_TEMP = GET_NTC_Temperature();                         // 获取NTC温度(主板温度)
+#else
+    MainBoard_TEMP = 25.0F;                                         // 无NTC传感器，使用默认值
+#endif
+#if HAS_CPU_TEMP_SENSOR
     CPU_TEMP = GET_CPU_Temperature();                               // 获取单片机CPU温度
+#else
+    CPU_TEMP = 25.0F;                                               // 无CPU温度传感器，使用默认值
+#endif
 }
 
 /*
@@ -146,10 +161,14 @@ void ValInit(void)
     // 初始化电压参考量
     CtrValue.Vout_ref = 0;
     // 限制占空比
+    // --- 初始化/复位代码部分 ---
+    // 1. 将当前的占空比执行值初始化为最小值（安全第一）
     CtrValue.BuckDuty = MIN_BUKC_DUTY;
-    CtrValue.BUCKMaxDuty = MIN_BUKC_DUTY;
     CtrValue.BoostDuty = MIN_BOOST_DUTY;
-    CtrValue.BoostMaxDuty = MIN_BOOST_DUTY;
+
+    // 2. 【修正重点】将动态限幅的天花板，初始化为真正的最大允许值！
+    CtrValue.BUCKMaxDuty = MAX_BUCK_DUTY;   // 指向 28200，而不是 MIN
+    CtrValue.BoostMaxDuty = MAX_BOOST_DUTY; // 指向最大值，释放环路控制权
     // 环路计算变量初始化
     VErr0 = 0;
     VErr1 = 0;
@@ -629,6 +648,7 @@ float one_order_lowpass_filter(float input, float alpha)
  * @param resistance 电阻值
  * @return 计算得到的温度值
  */
+#if HAS_NTC_SENSOR
 float calculateTemperature(float voltage)
 {
     // 数据进入前，可先做滤波处理
@@ -641,11 +661,14 @@ float calculateTemperature(float voltage)
     float temperature = 1.0F / (1.0F / T0 + log(Rt / R) / B) - Ka; // 计算温度
     return temperature;
 }
+#endif
 
 /**
  * @brief 获取NTC温度
- * @return 返回温度值
+ * 需要硬件上有NTC温度传感器，通过修改 HAS_NTC_SENSOR 宏来启用此功能。
+ * @return 返回温度值（单位：摄氏度）
  */
+#if HAS_NTC_SENSOR
 float GET_NTC_Temperature(void)
 {
     HAL_ADC_Start(&hadc2); // 启动ADC2采样，采样NTC温度
@@ -654,12 +677,20 @@ float GET_NTC_Temperature(void)
     float temperature = calculateTemperature(TEMP_adcValue * REF_3V3 / 65520.0F); // 计算温度
     return temperature;                                                           // 返回温度值
 }
+#else
+float GET_NTC_Temperature(void)
+{
+    return 25.0F; // 无NTC传感器，返回默认温度
+}
+#endif
 
 /**
  * @brief 读取CPU温度。
  * 使用ADC5采样单片机CPU温度，并根据校准值计算实际温度值。
+ * 需要通过修改 HAS_CPU_TEMP_SENSOR 宏来启用此功能。
  * @return 返回计算得到的温度值，单位为摄氏度。
  */
+#if HAS_CPU_TEMP_SENSOR
 float GET_CPU_Temperature(void)
 {
     HAL_ADC_Start(&hadc5); // 启动ADC5采样，采样单片机CPU温度
@@ -670,3 +701,9 @@ float GET_CPU_Temperature(void)
     float temperature = Temp_Scale * (TEMP_adcValue * (REF_3V3 / 3.0F) - TS_CAL1) + TS_CAL1_TEMP; // 计算温度
     return one_order_lowpass_filter(temperature, 0.1F);                                           // 返回温度值
 }
+#else
+float GET_CPU_Temperature(void)
+{
+    return 25.0F; // 无CPU温度传感器，返回默认温度
+}
+#endif
