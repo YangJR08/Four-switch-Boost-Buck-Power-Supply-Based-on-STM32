@@ -289,10 +289,6 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
   }
   if (htim->Instance == TIM4) // 定时器TIM4，中断时间10ms
   {
-    KEY_Scan(1, KEY1);        // 按键1扫描
-    KEY_Scan(2, KEY2);        // 按键2扫描
-    KEY_Scan(3, KEY3);        // 按键3扫描
-    KEY_Scan(4, KEY4);        // 按键4扫描
     Key_Tick10ms();           // 生成按键事件
   }
 }
