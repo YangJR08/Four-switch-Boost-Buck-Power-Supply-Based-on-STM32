@@ -84,10 +84,21 @@ CCMRAM void ADCSample(void)
  */
 void ADC_calculate(void)
 {
-    VIN = SADC.VinAvg * REF_3V3 / ADC_MAX_VALUE / (4.7F / 75.0F);   // 计算ADC1通道0输入电压采样结果
-    IIN = SADC.IinAvg * REF_3V3 / ADC_MAX_VALUE / 62.0F / 0.005F;   // 计算ADC1通道1输入电流采样结果
-    VOUT = SADC.VoutAvg * REF_3V3 / ADC_MAX_VALUE / (4.7F / 75.0F); // 计算ADC1通道2输出电压采样结果
-    IOUT = SADC.IoutAvg * REF_3V3 / ADC_MAX_VALUE / 62.0F / 0.005F; // 计算ADC1通道3输出电流采样结果
+    // ADC 单步电压分辨率 (3.3V / 4095.0f)
+    const float adc_lsb = REF_3V3 / (float)ADC_MAX_VALUE;
+
+    /* ==================== 电压采样计算 ==================== */
+    // 差分运放将电压缩小了 10 倍，因此逆推时需要乘以 10.0f
+    VIN  = ((float)SADC.VinAvg  * adc_lsb) * 10.0F;
+    VOUT = ((float)SADC.VoutAvg * adc_lsb) * 10.0F;
+
+    /* ==================== 电流采样计算 ==================== */
+    // 电流计算公式：I = V_adc / (R_sense * Gain)
+    // 硬件参数：R_sense = 0.008欧姆，Gain = 50
+    const float current_factor = 0.008F * 50.0F; 
+    
+    IIN  = ((float)SADC.IinAvg  * adc_lsb) / current_factor;
+    IOUT = ((float)SADC.IoutAvg * adc_lsb) / current_factor;
 #if HAS_NTC_SENSOR
     MainBoard_TEMP = GET_NTC_Temperature();                         // 获取NTC温度(主板温度)
 #else
